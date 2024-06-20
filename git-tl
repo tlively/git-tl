@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+
+# Copyright 2024 Thomas Lively
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+import argparse
+import subprocess
+import sys
+import random
+
+
+def die(*msg):
+    print(*msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def run(*cmd, echo=False):
+    cmd_string = ' '.join(f"'{c}'" for c in cmd)
+    if echo:
+        print('running:', cmd_string)
+    result = subprocess.run(cmd, capture_output=not echo)
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        die('failed running command:', cmd_string)
+    return result.stdout
+
+
+def bold():
+    print('\x1b[1m', end='')
+
+
+def unbold():
+    print('\x1b[22m', end='')
+
+
+# A nice pastel rainbow color palette.
+COLORS = [74, 68, 62, 98, 134, 170, 169, 168, 167,
+          173, 179, 185, 149, 113, 77, 78, 79, 80]
+COLOR_START = random.randrange(len(COLORS))
+
+
+def color(index):
+    c = COLORS[((index * 3) + COLOR_START) % len(COLORS)]
+    print(f'\x1b[38;5;{c}m', end='')
+
+
+def uncolor():
+    print('\x1b[39m', end='')
+
+
+def gray():
+    print('\x1b[38;5;245m', end='')
+
+
+def ungray():
+    uncolor()
+
+
+class Branch():
+    def __init__(self, name):
+        self.name = name
+        self.parent = None
+        self.children = []
+        self.ref = None
+        self.remote_ref = None
+        self.url = None
+        self.is_head = False
+        self.is_merged = False
+        self.is_approved = False
+        self.is_pending = False
+        self.is_passed = False
+        self.is_failed = False
+        self.is_mergeable = False
+
+
+def get_branches(no_gh=False):
+    # Get the branches and their upstreams (i.e. parents).
+    format_str = '%(objectname),%(refname:short),%(upstream:short),%(HEAD)'
+    refs = run('git', 'for-each-ref', 'refs/heads/', f'--format={format_str}')
+    branch_data = refs.decode(errors='replace').splitlines()
+
+    branches = {}
+    for data in branch_data:
+        d = data.split(',')
+        ref, name, upstream, head = d[0], d[1], d[2], d[3]
+        branch = branches.setdefault(name, Branch(name))
+        branch.ref = ref
+        if upstream:
+            branch.parent = branches.setdefault(upstream, Branch(upstream))
+        if head == '*':
+            branch.is_head = True
+
+    # Compute the children.
+    for branch in branches.values():
+        if branch.parent is not None:
+            branches[branch.parent.name].children.append(branch)
+
+    branches = list(branches.values())
+    if no_gh:
+        return branches
+
+    # Prepare the GraphQL query to get information on pull requests.
+    pr_template = '''
+_{}: pullRequests(headRefName: "{}", first: 1) {{
+  nodes {{
+    headRefOid
+    url
+    state
+    reviewDecision
+    statusCheckRollup {{ state }}
+    mergeable
+  }}
+}}
+'''
+    pr_frags = ''.join(pr_template.format(i, branch.name)
+                       for i, branch in enumerate(branches))
+    query = f'''
+query($owner: String!, $repo: String!) {{
+  repository(owner: $owner, name: $repo) {{
+    {pr_frags}
+  }}
+}}
+'''
+
+    # Prepare the jq filter to extract the data from the response JSON.
+    field_list = ','.join(f'._{i}' for i in range(len(branches)))
+    filter = (f'.data.repository | {field_list} | .nodes[0]? | ' +
+              '.headRefOid?,.url?,.state?,.reviewDecision?,' +
+              '.statusCheckRollup?.state?,.mergeable?')
+
+    # Execute the query
+    prs = run('gh', 'api', 'graphql',
+              '--field',  'owner={owner}', '--field', 'repo={repo}',
+              '--field', f"query={query}", f"--jq={filter}")
+    prs = prs.decode(errors='replace').splitlines()
+
+    num_fields = 6
+    refs = prs[0::num_fields]
+    urls = prs[1::num_fields]
+    states = prs[2::num_fields]
+    decisions = prs[3::num_fields]
+    checks = prs[4::num_fields]
+    mergeables = prs[5::num_fields]
+
+    for branch, ref, url, state, decision, check, mergeable in \
+            zip(branches, refs, urls, states, decisions, checks, mergeables):
+        if state == 'MERGED':
+            branch.is_merged = True
+        if url != 'null' and state == 'OPEN':
+            branch.remote_ref = ref
+            branch.url = url
+            if decision == 'APPROVED':
+                branch.is_approved = True
+            if check == 'PENDING':
+                branch.is_pending = True
+            if check == 'SUCCESS':
+                branch.is_passed = True
+            if check == 'FAILURE':
+                branch.is_failed = True
+            if mergeable == 'MERGEABLE':
+                branch.is_mergeable = True
+
+    return branches
+
+
+def get_head(branches=None):
+    if not branches:
+        branches = get_branches(True)
+    head = [b for b in branches if b.is_head]
+    if not head:
+        die('expected to find HEAD branch')
+    return head[0]
+
+
+def ls(include_all, no_gh):
+    branches = get_branches(no_gh)
+
+    if include_all:
+        roots = [b for b in branches if b.parent is None]
+    else:
+        roots = [b for b in branches if b.name == 'main']
+        if not roots:
+            die("expected to find 'main' branch")
+
+    # Postorder traversal to determine the order we will print branches in.
+    lines = []
+
+    def visit(branch, indent):
+        for i, child in enumerate(branch.children):
+            visit(child, indent + i)
+        lines.append((branch, indent))
+
+    for root in roots:
+        visit(root, 0)
+        lines.append((None, 0))
+
+    max_indent = max(i for b, i in lines)
+    max_name = max((len(b.name) if b else 0 for b, i in lines), default=0)
+
+    for branch, indent in lines[:-1]:
+        if not branch:
+            print()
+            continue
+        for i in range(indent):
+            color(i)
+            print('│', end='')
+        color(indent)
+        if branch.is_head:
+            bold()
+            print('●', end='')
+        else:
+            print('○', end='')
+        if len(branch.children) >= 2:
+            print('┴' * (len(branch.children) - 2), end='')
+            print('┘', end='')
+        spaces = max_indent + 1 - indent - max(0, len(branch.children) - 1)
+        print(' ' * spaces, end='')
+        print(branch.name, end='')
+        uncolor()
+        if branch.is_head:
+            unbold()
+        if no_gh:
+            print()
+            continue
+        if branch.remote_ref and branch.remote_ref != branch.ref:
+            print('*', end='')
+        else:
+            print(' ', end='')
+        print(' ' * (max_name - len(branch.name)), end='')
+        if branch.is_approved and branch.is_passed and branch.is_mergeable:
+            print('✅', end='')
+        elif branch.is_approved and branch.is_passed:
+            print('☑️', end='')
+        elif branch.is_pending:
+            print('⏳', end='')
+        elif branch.is_failed:
+            print('❌', end='')
+        else:
+            print(' ', end='')
+        if branch.url:
+            gray()
+            print(' (' + branch.url + ')', end='')
+            ungray()
+        print()
+
+
+def new_branch(before, keep_children, name):
+    head = get_head()
+
+    if before:
+        if not head.parent:
+            die('cannot create prior branch without parent')
+        run('git', 'checkout', '-b', name, head.parent.name, echo=True)
+        run('git', 'branch', '--set-upstream-to', name, head.name, echo=True)
+        run('git', 'branch', '--set-upstream-to', head.parent.name, name,
+            echo=True)
+    else:
+        run('git', 'checkout', '-b', name, echo=True)
+        run('git', 'branch', '--set-upstream-to', head.name, name, echo=True)
+        if keep_children:
+            for child in head.children:
+                run('git', 'branch', '--set-upstream-to', name, child.name,
+                    echo=True)
+
+
+def delete_branch(branch):
+    if not isinstance(branch, Branch):
+        branches = get_branches(True)
+        if not branch:
+            head = get_head(branches)
+            branch = head
+        else:
+            branches = [b for b in branches if b.name == branch]
+            if not branches:
+                die(f'no branch named {branch}')
+            branch = branches[0]
+
+    if branch.is_head:
+        # We need to switch to a new branch first.
+        if branch.parent:
+            run('git', 'checkout', branch.parent.name, echo=True)
+        elif len(branch.children) == 1:
+            run('git', 'checkout', branch.children[0].name, echo=True)
+        else:
+            run('git', 'checkout', 'main', echo=True)
+
+    # Delete the branch.
+    run('git', 'branch', '-D', branch.name, echo=True)
+
+    # Reparent the children.
+    for child in branch.children:
+        if branch.parent:
+            run('git', 'branch', '--set-upstream-to',
+                branch.parent.name, child.name, echo=True)
+            child.parent = branch.parent
+        else:
+            run('git', 'branch', '--unset-upstream', child.name,
+                echo=True)
+            child.parent = None
+
+
+def up():
+    head = get_head()
+
+    if not head.children:
+        die('expected child branch')
+
+    if len(head.children) > 1:
+        die('multiple children:\n  ' +
+            '\n  '.join(child.name for child in head.children))
+
+    run('git', 'switch', head.children[0].name, echo=True)
+
+
+def down():
+    head = get_head()
+
+    if not head.parent:
+        die('expected parent branch')
+
+    run('git', 'switch', head.parent.name, echo=True)
+
+
+def sync(no_fetch):
+    branches = get_branches(no_fetch)
+    head = get_head(branches)
+
+    def preorder(roots):
+        for root in roots:
+            yield root
+            yield from preorder(root.children)
+
+    roots = [b for b in branches if b.parent is None]
+
+    # Rebase branches
+    for branch in preorder(roots):
+        if branch.name.startswith('origin/'):
+            if not no_fetch:
+                parts = branch.name.split('/', 1)
+                run('git', 'fetch', parts[0], parts[1], echo=True)
+        elif branch.parent:
+            run('git', 'rebase', branch.parent.name, branch.name, echo=True)
+
+    # Delete merged branches
+    for branch in preorder(roots):
+        if branch.is_merged and branch.name != 'main':
+            delete_branch(branch)
+
+    run('git', 'switch', head.name, echo=True)
+
+
+def push(update_only, reviewers):
+    head = get_head(get_branches())
+
+    branches = []
+    curr = head
+    while curr:
+        branches.append(curr)
+        curr = curr.parent
+
+    pushed = False
+    for branch in branches[::-1]:
+        if branch.name.startswith('origin/') or branch.name == 'main':
+            continue
+
+        if not branch.url and update_only:
+            break
+
+        if branch.ref != branch.remote_ref or pushed:
+            run('git', 'push', '-f', 'origin', f'{branch.name}:{branch.name}',
+                echo=True)
+            pushed = True
+        else:
+            print(f'branch {branch.name} already up-to-date')
+
+        if not branch.url:
+            if not branch.parent:
+                die('cannot create PR for branch without parent')
+            cmd = ['gh', 'pr', 'create', '--base', branch.parent.name,
+                   '--head', branch.name, '--fill-first']
+            if reviewers:
+                reviewer_list = ','.join(reviewers)
+                cmd.append(f'--reviewer={reviewer_list}')
+                run(*cmd, echo=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='git-tl',
+        description="tlively's opinionated git workflow wrapper")
+    subparsers = parser.add_subparsers(
+        dest='cmd', required=True, metavar='subcommand',)
+
+    ls_parser = subparsers.add_parser('ls', help='list stacked branches')
+    ls_parser.add_argument(
+        '-a', '--all', action='store_true', dest='include_all',
+        help="include all branches, not just those stacked on 'main'")
+    ls_parser.add_argument(
+        '-n', '--no-gh', action='store_true',
+        help='do not query GitHub PR statuses')
+
+    new_branch_parser = subparsers.add_parser(
+        'new-branch', help='create a new stacked branch')
+    new_branch_parser.add_argument(
+        '-a', '--after', dest='before', action='store_false', default=False,
+        help='insert the new branch after the current branch (default)')
+    new_branch_parser.add_argument(
+        '-b', '--before', action='store_true',
+        help='insert the new branch before the current branch')
+    new_branch_parser.add_argument(
+        '-k', '--keep-children', action='store_true',
+        help='reparent children of the current branch onto the new branch')
+    new_branch_parser.add_argument('name', help='the new branch name')
+
+    delete_branch_parser = subparsers.add_parser(
+        'delete-branch', help='delete a branch and reparent its children')
+    delete_branch_parser.add_argument(
+        'name', nargs='?', help='the branch to delete')
+
+    subparsers.add_parser('up', help='move up the stack to the child branch')
+
+    subparsers.add_parser(
+        'down', help='move down the stack to the parent branch')
+
+    sync_parser = subparsers.add_parser('sync', help='rebase stacked branches')
+    sync_parser.add_argument(
+        '-n', '--no-fetch', action='store_true',
+        help='do not fetch origin/main before rebasing')
+
+    push_parser = subparsers.add_parser(
+        'push', help='update and create stacked PRs')
+    push_parser.add_argument(
+        '-u', '--update-only', action='store_true',
+        help='do not create new PRs')
+    push_parser.add_argument(
+        '-r', '--reviewers', action='extend', nargs='+', type=str,
+        metavar='user', help='Reviewers for newly created PRs')
+
+    args = parser.parse_args()
+
+    if args.cmd == 'ls':
+        ls(args.include_all, args.no_gh)
+    elif args.cmd == 'new-branch':
+        new_branch(args.before, args.keep_children, args.name)
+    elif args.cmd == 'delete-branch':
+        delete_branch(args.name)
+    elif args.cmd == 'up':
+        up()
+    elif args.cmd == 'down':
+        down()
+    elif args.cmd == 'sync':
+        sync(args.no_fetch)
+    elif args.cmd == 'push':
+        push(args.update_only, args.reviewers)
+
+
+if __name__ == '__main__':
+    main()
