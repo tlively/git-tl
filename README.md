@@ -52,4 +52,4 @@ writing, these are the available subcommands:
 ## How stacking works
 
 Each branch's parent is just its `upstream`, so you can reparent a branch
-manually with `git branch --set-branch-to new-parent my-branch`.
+manually with `git branch --set-upstream-to new-parent my-branch`.
