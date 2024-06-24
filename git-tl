@@ -223,10 +223,14 @@ def ls(include_all, no_gh):
         else:
             print('○', end='')
         if len(branch.children) >= 2:
-            print('┴' * (len(branch.children) - 2), end='')
+            for i in range(indent + 1, indent + len(branch.children) - 1):
+                color(i)
+                print('┴', end='')
+            color(indent + len(branch.children) - 1)
             print('┘', end='')
         spaces = max_indent + 1 - indent - max(0, len(branch.children) - 1)
         print(' ' * spaces, end='')
+        color(indent)
         print(branch.name, end='')
         uncolor()
         if branch.is_head:
