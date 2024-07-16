@@ -184,21 +184,14 @@ def get_head(branches=None):
     return head[0]
 
 
-def get_roots(include_all, branches=None):
-    if branches is None:
-        branches = get_branches(True)
+def ls(include_all, no_gh):
+    branches = get_branches(no_gh)
     if include_all:
-        return [b for b in branches if b.parent is None]
+        roots = [b for b in branches if b.parent is None]
     else:
         roots = [b for b in branches if b.name == 'main']
         if not roots:
             die("expected to find 'main' branch")
-        return roots
-
-
-def ls(include_all, no_gh):
-    branches = get_branches(no_gh)
-    roots = get_roots(include_all, branches)
 
     # Postorder traversal to determine the order we will print branches in.
     lines = []
@@ -356,7 +349,12 @@ def down():
 def sync(include_all, no_fetch):
     branches = get_branches(no_fetch)
     head = get_head(branches)
-    roots = get_roots(include_all, branches)
+    if include_all:
+        roots = [b for b in branches if b.parent is None]
+    else:
+        roots = [b for b in branches if b.name == 'origin/main']
+        if not roots:
+            die("expected to find 'origin/main' branch")
 
     def preorder(roots):
         for root in roots:
