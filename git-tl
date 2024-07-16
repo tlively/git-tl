@@ -176,7 +176,7 @@ query($owner: String!, $repo: String!) {{
 
 
 def get_head(branches=None):
-    if not branches:
+    if branches is None:
         branches = get_branches(True)
     head = [b for b in branches if b.is_head]
     if not head:
@@ -184,15 +184,21 @@ def get_head(branches=None):
     return head[0]
 
 
-def ls(include_all, no_gh):
-    branches = get_branches(no_gh)
-
+def get_roots(include_all, branches=None):
+    if branches is None:
+        branches = get_branches(True)
     if include_all:
-        roots = [b for b in branches if b.parent is None]
+        return [b for b in branches if b.parent is None]
     else:
         roots = [b for b in branches if b.name == 'main']
         if not roots:
             die("expected to find 'main' branch")
+        return roots
+
+
+def ls(include_all, no_gh):
+    branches = get_branches(no_gh)
+    roots = get_roots(include_all, branches)
 
     # Postorder traversal to determine the order we will print branches in.
     lines = []
@@ -293,7 +299,7 @@ def delete_branch(branch):
 
     if branch.is_head:
         # We need to switch to a new branch first.
-        if branch.parent:
+        if branch.parent and not branch.parent.name.startswith('origin/'):
             run('git', 'checkout', branch.parent.name, echo=True)
         elif len(branch.children) == 1:
             run('git', 'checkout', branch.children[0].name, echo=True)
@@ -303,12 +309,22 @@ def delete_branch(branch):
     # Delete the branch.
     run('git', 'branch', '-D', branch.name, echo=True)
 
+    # Remove from the parent
+    if branch.parent:
+        branch.parent.children.remove(branch)
+
     # Reparent the children.
     for child in branch.children:
-        if branch.parent:
+        if branch.parent and not branch.parent.name.startswith('origin/'):
             run('git', 'branch', '--set-upstream-to',
                 branch.parent.name, child.name, echo=True)
             child.parent = branch.parent
+        elif child.remote_ref:
+            remote = f'origin/{child.name}'
+            run('git', 'branch', '--set-upstream-to',
+                remote, child.name, echo=True)
+            child.parent = Branch(remote)
+            child.parent.children = [child]
         else:
             run('git', 'branch', '--unset-upstream', child.name,
                 echo=True)
@@ -337,16 +353,23 @@ def down():
     run('git', 'switch', head.parent.name, echo=True)
 
 
-def sync(no_fetch):
+def sync(include_all, no_fetch):
     branches = get_branches(no_fetch)
     head = get_head(branches)
+    roots = get_roots(include_all, branches)
 
     def preorder(roots):
         for root in roots:
             yield root
             yield from preorder(root.children)
 
-    roots = [b for b in branches if b.parent is None]
+    # Delete merged branches
+    for branch in preorder(roots):
+        if branch.is_merged and branch.name != 'main':
+            delete_branch(branch)
+
+    roots = [root for root in roots
+             if not root.is_merged or root.name == 'main']
 
     # Rebase branches
     for branch in preorder(roots):
@@ -356,11 +379,6 @@ def sync(no_fetch):
                 run('git', 'fetch', parts[0], parts[1], echo=True)
         elif branch.parent:
             run('git', 'rebase', branch.parent.name, branch.name, echo=True)
-
-    # Delete merged branches
-    for branch in preorder(roots):
-        if branch.is_merged and branch.name != 'main':
-            delete_branch(branch)
 
     run('git', 'switch', head.name, echo=True)
 
@@ -440,6 +458,9 @@ def main():
 
     sync_parser = subparsers.add_parser('sync', help='rebase stacked branches')
     sync_parser.add_argument(
+        '-a', '--all', action='store_true', dest='include_all',
+        help="include all branches, not just those stacked on 'main'")
+    sync_parser.add_argument(
         '-n', '--no-fetch', action='store_true',
         help='do not fetch origin/main before rebasing')
 
@@ -465,7 +486,7 @@ def main():
     elif args.cmd == 'down':
         down()
     elif args.cmd == 'sync':
-        sync(args.no_fetch)
+        sync(args.include_all, args.no_fetch)
     elif args.cmd == 'push':
         push(args.update_only, args.reviewers)
 
