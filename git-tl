@@ -312,6 +312,7 @@ def delete_branch(branch):
             run('git', 'branch', '--set-upstream-to',
                 branch.parent.name, child.name, echo=True)
             child.parent = branch.parent
+            child.parent.children.append(child)
         elif child.remote_ref:
             remote = f'origin/{child.name}'
             run('git', 'branch', '--set-upstream-to',
@@ -362,12 +363,13 @@ def sync(include_all, no_fetch):
             yield from preorder(root.children)
 
     # Delete merged branches
-    for branch in preorder(roots):
+    for branch in list(preorder(roots)):
         if branch.is_merged and branch.name != 'main':
             delete_branch(branch)
-
-    roots = [root for root in roots
-             if not root.is_merged or root.name == 'main']
+            if branch in roots:
+                roots.remove(branch)
+            if branch.parent.name.startswith('origin/'):
+                roots.remove(branch.parent)
 
     # Rebase branches
     for branch in preorder(roots):
