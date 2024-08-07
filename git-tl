@@ -325,6 +325,23 @@ def delete_branch(branch):
             child.parent = None
 
 
+def rename_branch(branch, name):
+    branches = get_branches()
+    if branch is None:
+        branch = get_head(branches)
+    else:
+        branches = [b for b in branches if b.name == branch]
+        if not branches:
+            die(f'expected to find branch {branch}')
+        branch = branches[0]
+
+    run('git', 'branch', '-m', branch.name, name, echo=True)
+
+    for child in branch.children:
+        run('git', 'branch', '--set-upstream-to', branch.name, child.name,
+            echo=True)
+
+
 def up():
     head = get_head()
 
@@ -362,9 +379,13 @@ def sync(include_all, no_fetch):
             yield root
             yield from preorder(root.children)
 
+    deleted_head = False
+
     # Delete merged branches
     for branch in list(preorder(roots)):
         if branch.is_merged and branch.name != 'main':
+            if branch.is_head:
+                deleted_head = True
             delete_branch(branch)
             if branch in roots:
                 roots.remove(branch)
@@ -380,7 +401,8 @@ def sync(include_all, no_fetch):
         elif branch.parent:
             run('git', 'rebase', branch.parent.name, branch.name, echo=True)
 
-    run('git', 'switch', head.name, echo=True)
+    new_head = head.name if not deleted_head else 'main'
+    run('git', 'switch', new_head, echo=True)
 
 
 def push(update_only, reviewers):
@@ -456,6 +478,13 @@ def main():
     subparsers.add_parser(
         'down', help='move down the stack to the parent branch')
 
+    rename_branch_parser = subparsers.add_parser(
+        'rename-branch', help='rename a branch and reparent its children')
+    rename_branch_parser.add_argument(
+        'branch', nargs='?', help='the branch to rename')
+    rename_branch_parser.add_argument(
+        'name', help='the new name to use')
+
     sync_parser = subparsers.add_parser('sync', help='rebase stacked branches')
     sync_parser.add_argument(
         '-a', '--all', action='store_true', dest='include_all',
@@ -481,6 +510,8 @@ def main():
         new_branch(args.before, args.keep_children, args.name)
     elif args.cmd == 'delete-branch':
         delete_branch(args.name)
+    elif args.cmd == 'rename-branch':
+        rename_branch(args.branch, args.name)
     elif args.cmd == 'up':
         up()
     elif args.cmd == 'down':
