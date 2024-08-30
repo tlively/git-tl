@@ -26,11 +26,13 @@ def die(*msg):
     sys.exit(1)
 
 
-def run(*cmd, echo=False):
+def run(*cmd, echo=False, returncode=False):
     cmd_string = ' '.join(f"'{c}'" for c in cmd)
     if echo:
         print('running:', cmd_string)
     result = subprocess.run(cmd, capture_output=not echo)
+    if returncode:
+        return result.returncode
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
         die('failed running command:', cmd_string)
@@ -379,6 +381,15 @@ def sync(include_all, no_fetch):
             yield root
             yield from preorder(root.children)
 
+    # Record pre-update parent refs so we can rebase only the new commits on
+    # each branch later.
+    parentRefs = {}
+    for b in branches:
+        if b.parent and b.parent.ref:
+            if 0 == run('git', 'merge-base', '--is-ancestor', b.parent.ref,
+                        b.ref, returncode=True):
+                parentRefs[b] = b.parent.ref
+
     deleted_head = False
 
     # Delete merged branches
@@ -399,7 +410,11 @@ def sync(include_all, no_fetch):
                 parts = branch.name.split('/', 1)
                 run('git', 'fetch', parts[0], parts[1], echo=True)
         elif branch.parent:
-            run('git', 'rebase', branch.parent.name, branch.name, echo=True)
+            if branch in parentRefs:
+                run('git', 'rebase', '--onto', branch.parent.name,
+                    parentRefs[branch], branch.name, echo=True)
+            else:
+                run('git', 'rebase', branch.parent.name, branch.name, echo=True)
 
     new_head = head.name if not deleted_head else 'main'
     run('git', 'switch', new_head, echo=True)
