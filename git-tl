@@ -344,26 +344,29 @@ def rename_branch(branch, name):
             echo=True)
 
 
-def up():
-    head = get_head()
+def up(count):
+    curr = get_head()
 
-    if not head.children:
-        die('expected child branch')
+    for i in range(count):
+        if not curr.children:
+            die('expected child branch')
+        if len(curr.children) > 1:
+            die('multiple children:\n  ' +
+                '\n  '.join(child.name for child in curr.children))
+        curr = curr.children[0]
 
-    if len(head.children) > 1:
-        die('multiple children:\n  ' +
-            '\n  '.join(child.name for child in head.children))
-
-    run('git', 'switch', head.children[0].name, echo=True)
+    run('git', 'switch', curr.name, echo=True)
 
 
-def down():
-    head = get_head()
+def down(count):
+    curr = get_head()
 
-    if not head.parent:
-        die('expected parent branch')
+    for i in range(count):
+        if not curr.parent:
+            die('expected parent branch')
+        curr = curr.parent
 
-    run('git', 'switch', head.parent.name, echo=True)
+    run('git', 'switch', curr.name, echo=True)
 
 
 def sync(include_all, no_fetch):
@@ -488,17 +491,20 @@ def main():
     delete_branch_parser.add_argument(
         'name', nargs='?', help='the branch to delete')
 
-    subparsers.add_parser('up', help='move up the stack to the child branch')
-
-    subparsers.add_parser(
-        'down', help='move down the stack to the parent branch')
-
     rename_branch_parser = subparsers.add_parser(
         'rename-branch', help='rename a branch and reparent its children')
     rename_branch_parser.add_argument(
         'branch', nargs='?', help='the branch to rename')
     rename_branch_parser.add_argument(
         'name', help='the new name to use')
+
+    up_parser = subparsers.add_parser(
+        'up', help='move up the stack to the child branch')
+    up_parser.add_argument('count', type=int, nargs='?', default=1)
+
+    down_parser = subparsers.add_parser(
+        'down', help='move down the stack to the parent branch')
+    down_parser.add_argument('count', type=int, nargs='?', default=1)
 
     sync_parser = subparsers.add_parser('sync', help='rebase stacked branches')
     sync_parser.add_argument(
@@ -528,9 +534,9 @@ def main():
     elif args.cmd == 'rename-branch':
         rename_branch(args.branch, args.name)
     elif args.cmd == 'up':
-        up()
+        up(args.count)
     elif args.cmd == 'down':
-        down()
+        down(args.count)
     elif args.cmd == 'sync':
         sync(args.include_all, args.no_fetch)
     elif args.cmd == 'push':
