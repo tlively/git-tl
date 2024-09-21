@@ -459,7 +459,7 @@ def push(update_only, reviewers):
             if reviewers:
                 reviewer_list = ','.join(reviewers)
                 cmd.append(f'--reviewer={reviewer_list}')
-                run(*cmd, echo=True)
+            run(*cmd, echo=True)
 
 
 def main():
