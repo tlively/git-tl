@@ -406,14 +406,18 @@ def sync(include_all, no_fetch):
             if branch.parent.name.startswith('origin/'):
                 roots.remove(branch.parent)
 
-    # Rebase branches
+    # Rebase or merge branches
     for branch in preorder(roots):
         if branch.name.startswith('origin/'):
             if not no_fetch:
                 parts = branch.name.split('/', 1)
                 run('git', 'fetch', parts[0], parts[1], echo=True)
         elif branch.parent:
-            if branch in parentRefs:
+            if branch.url:
+                # This branch is public, so merge instead of rebase.
+                run('git', 'switch', branch.name, echo=True)
+                run('git', 'merge', '--no-edit', branch.parent.name, echo=True)
+            elif branch in parentRefs:
                 run('git', 'rebase', '--onto', branch.parent.name,
                     parentRefs[branch], branch.name, echo=True)
             else:
@@ -441,8 +445,8 @@ def push(update_only, reviewers):
             break
 
         if branch.ref != branch.remote_ref or pushed:
-            run('git', 'push', '-f', 'origin', f'{branch.name}:{branch.name}',
-                echo=True)
+            run('git', 'push', '--force-with-lease', 'origin',
+                f'{branch.name}:{branch.name}', echo=True)
             pushed = True
         else:
             print(f'branch {branch.name} already up-to-date')
@@ -506,7 +510,8 @@ def main():
         'down', help='move down the stack to the parent branch')
     down_parser.add_argument('count', type=int, nargs='?', default=1)
 
-    sync_parser = subparsers.add_parser('sync', help='rebase stacked branches')
+    sync_parser = subparsers.add_parser(
+        'sync', help='update stacked branches by merging')
     sync_parser.add_argument(
         '-a', '--all', action='store_true', dest='include_all',
         help="include all branches, not just those stacked on 'main'")
