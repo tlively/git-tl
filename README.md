@@ -10,7 +10,7 @@ work, not to be super configurable or general.
 
 Just put `git-tl` in your PATH. Then you can run `git tl ls`, `git tl sync`,
 etc. This is not actually very pleasant to type, so you might want to configure
-some aliases of you choice using `git config --global --edit`. Here are my aliases:
+some aliases of your choice using `git config --global --edit`. Here are my aliases:
 
 ```ini
 [alias]
