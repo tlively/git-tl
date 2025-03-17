@@ -30,7 +30,7 @@ def run(*cmd, echo=False, returncode=False):
     cmd_string = ' '.join(f"'{c}'" for c in cmd)
     if echo:
         print('running:', cmd_string)
-    result = subprocess.run(cmd, capture_output=not echo)
+    result = subprocess.run(cmd, capture_output=not echo, text=True)
     if returncode:
         return result.returncode
     if result.returncode != 0:
@@ -91,7 +91,7 @@ def get_branches(no_gh=False):
     # Get the branches and their upstreams (i.e. parents).
     format_str = '%(objectname),%(refname:short),%(upstream:short),%(HEAD)'
     refs = run('git', 'for-each-ref', 'refs/heads/', f'--format={format_str}')
-    branch_data = refs.decode(errors='replace').splitlines()
+    branch_data = refs.splitlines()
 
     branches = {}
     for data in branch_data:
@@ -146,7 +146,7 @@ query($owner: String!, $repo: String!) {{
     prs = run('gh', 'api', 'graphql',
               '--field',  'owner={owner}', '--field', 'repo={repo}',
               '--field', f"query={query}", f"--jq={filter}")
-    prs = prs.decode(errors='replace').splitlines()
+    prs = prs.splitlines()
 
     num_fields = 6
     refs = prs[0::num_fields]
