@@ -21,6 +21,9 @@ import sys
 import random
 
 
+default_upstream = 'main'
+
+
 def die(*msg):
     print(*msg, file=sys.stderr)
     sys.exit(1)
@@ -85,6 +88,9 @@ class Branch():
         self.is_passed = False
         self.is_failed = False
         self.is_mergeable = False
+
+    def __str__(self):
+        return f'<GitBranch: {self.name} (parent={self.parent})>'
 
 
 def get_branches(no_gh=False):
@@ -191,9 +197,9 @@ def ls(include_all, no_gh):
     if include_all:
         roots = [b for b in branches if b.parent is None]
     else:
-        roots = [b for b in branches if b.name == 'main']
+        roots = [b for b in branches if b.name == default_upstream]
         if not roots:
-            die("expected to find 'main' branch")
+            die(f"expected to find `{default_upstream}` branch.\nTo configure a different upstream use `git config set tl.upstream`")
 
     # Postorder traversal to determine the order we will print branches in.
     lines = []
@@ -299,7 +305,7 @@ def delete_branch(branch):
         elif len(branch.children) == 1:
             run('git', 'checkout', branch.children[0].name, echo=True)
         else:
-            run('git', 'checkout', 'main', echo=True)
+            run('git', 'checkout', default_upstream, echo=True)
 
     # Delete the branch.
     run('git', 'branch', '-D', branch.name, echo=True)
@@ -375,9 +381,9 @@ def sync(include_all, no_fetch):
     if include_all:
         roots = [b for b in branches if b.parent is None]
     else:
-        roots = [b for b in branches if b.name == 'origin/main']
+        roots = [b for b in branches if b.name == default_upstream]
         if not roots:
-            die("expected to find 'origin/main' branch")
+            die(f"expected to find '${default_upstream}' branch")
 
     def preorder(roots):
         for root in roots:
@@ -397,7 +403,10 @@ def sync(include_all, no_fetch):
 
     # Delete merged branches
     for branch in list(preorder(roots)):
-        if branch.is_merged and branch.name != 'main':
+        # Never delete the default upstream branch.  This avoids deleting
+        # the default upstream branch if it happes to be a local branch
+        # (e.g. `main` vs `origin/main`)
+        if branch.is_merged and branch.name != default_upstream:
             if branch.is_head:
                 deleted_head = True
             delete_branch(branch)
@@ -423,21 +432,21 @@ def sync(include_all, no_fetch):
             else:
                 run('git', 'rebase', branch.parent.name, branch.name, echo=True)
 
-    new_head = head.name if not deleted_head else 'main'
+    new_head = head.name if not deleted_head else default_upstream
     run('git', 'switch', new_head, echo=True)
 
 
 def push(update_only, reviewers):
     head = get_head(get_branches())
 
-    branches = []
+    ancestors = []
     curr = head
     while curr:
-        branches.append(curr)
+        ancestors.append(curr)
         curr = curr.parent
 
     pushed = False
-    for branch in branches[::-1]:
+    for branch in reversed(ancestors):
         if branch.name.startswith('origin/') or branch.name == 'main':
             continue
 
@@ -462,7 +471,14 @@ def push(update_only, reviewers):
             run(*cmd, echo=True)
 
 
+def get_config(name, default):
+    return run('git', 'config', 'get', f'--default={default}', f'tl.{name}').strip()
+
+
 def main():
+    global default_upstream
+    default_upstream = get_config('upstream', default_upstream)
+
     parser = argparse.ArgumentParser(
         prog='git-tl',
         description="tlively's opinionated git workflow wrapper")
@@ -472,7 +488,7 @@ def main():
     ls_parser = subparsers.add_parser('ls', help='list stacked branches')
     ls_parser.add_argument(
         '-a', '--all', action='store_true', dest='include_all',
-        help="include all branches, not just those stacked on 'main'")
+        help=f"include all branches, not just those stacked on '{default_upstream}'")
     ls_parser.add_argument(
         '-n', '--no-gh', action='store_true',
         help='do not query GitHub PR statuses')
@@ -514,7 +530,7 @@ def main():
         'sync', help='update stacked branches by merging')
     sync_parser.add_argument(
         '-a', '--all', action='store_true', dest='include_all',
-        help="include all branches, not just those stacked on 'main'")
+        help=f"include all branches, not just those stacked on '{default_upstream}'")
     sync_parser.add_argument(
         '-n', '--no-fetch', action='store_true',
         help='do not fetch origin/main before rebasing')
