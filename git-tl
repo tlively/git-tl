@@ -16,6 +16,7 @@
 
 
 import argparse
+import shlex
 import subprocess
 import sys
 import random
@@ -27,15 +28,14 @@ def die(*msg):
 
 
 def run(*cmd, echo=False, returncode=False):
-    cmd_string = ' '.join(f"'{c}'" for c in cmd)
     if echo:
-        print('running:', cmd_string)
+        print('running:', shlex.join(cmd))
     result = subprocess.run(cmd, capture_output=not echo, text=True)
     if returncode:
         return result.returncode
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
-        die('failed running command:', cmd_string)
+        die('failed running command:', shlex.join(cmd))
     return result.stdout
 
 
