@@ -53,3 +53,16 @@ writing, these are the available subcommands:
 
 Each branch's parent is just its `upstream`, so you can reparent a branch
 manually with `git branch --set-upstream-to new-parent my-branch`.
+
+## Default upstream branch
+
+By deafult `git-tl` will only list branches originate from the default
+upstream branch.  This is also the branch that `git-tl` will switch to
+if the current branch is merged by `git-tl sync`.
+
+The default upstream branch defaults to `main` but can be configured
+by the `tl.upstream` git config setting. e.g.
+
+```
+$ git config set tl.upstream origin/main
+```
