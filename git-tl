@@ -105,16 +105,19 @@ def get_worktrees():
     # Get the worktrees and the branches they have checked out.
     lines = run('git', 'worktree', 'list', '--porcelain').decode(errors='replace').splitlines()
     worktrees = {}
+    main_worktree = None
     current_worktree = None
     for line in lines:
         if line.startswith('worktree '):
             current_worktree = line[9:]
+            if main_worktree is None:
+                main_worktree = current_worktree
         elif line.startswith('branch '):
             branch = line[7:]
             if branch.startswith('refs/heads/'):
                 branch = branch[11:]
             worktrees[branch] = current_worktree
-    return worktrees
+    return worktrees, main_worktree
 
 
 def get_current_worktree():
@@ -141,7 +144,7 @@ def get_branches(no_gh=False):
         if head == '*':
             branch.is_head = True
 
-    worktrees = get_worktrees()
+    worktrees, _ = get_worktrees()
     for name, branch in branches.items():
         if name in worktrees:
             branch.worktree = worktrees[name]
@@ -303,18 +306,24 @@ def ls(include_all, no_gh):
         print()
 
 
-def new_branch(before, keep_children, name):
+def new_branch(before, keep_children, name, worktree):
     head = get_head()
 
     if before:
         if not head.parent:
             die('cannot create prior branch without parent')
-        run('git', 'checkout', '-b', name, head.parent.name, echo=True)
+        if worktree:
+            run('git', 'worktree', 'add', worktree, '-b', name, head.parent.name, echo=True)
+        else:
+            run('git', 'checkout', '-b', name, head.parent.name, echo=True)
         run('git', 'branch', '--set-upstream-to', name, head.name, echo=True)
         run('git', 'branch', '--set-upstream-to', head.parent.name, name,
             echo=True)
     else:
-        run('git', 'checkout', '-b', name, echo=True)
+        if worktree:
+            run('git', 'worktree', 'add', worktree, '-b', name, echo=True)
+        else:
+            run('git', 'checkout', '-b', name, echo=True)
         run('git', 'branch', '--set-upstream-to', head.name, name, echo=True)
         if keep_children:
             for child in head.children:
@@ -322,7 +331,7 @@ def new_branch(before, keep_children, name):
                     echo=True)
 
 
-def delete_branch(branch):
+def delete_branch(branch, force=False):
     if not isinstance(branch, Branch):
         branches = get_branches(True)
         if not branch:
@@ -342,6 +351,18 @@ def delete_branch(branch):
             run('git', 'checkout', branch.children[0].name, echo=True)
         else:
             run('git', 'checkout', default_upstream, echo=True)
+
+    # Delete the worktree if it exists.
+    if branch.worktree:
+        _, main_worktree = get_worktrees()
+        current_worktree = get_current_worktree()
+        if branch.worktree != main_worktree:
+            if not force and current_worktree != main_worktree:
+                print(f"Branch '{branch.name}' is checked out in worktree '{branch.worktree}'.")
+                response = input("Remove worktree? [y/N] ")
+                if response.lower() != 'y':
+                    die("Aborting.")
+            run('git', 'worktree', 'remove', '--force', branch.worktree, echo=True)
 
     # Delete the branch.
     run('git', 'branch', '-D', branch.name, echo=True)
@@ -555,10 +576,15 @@ def main():
     new_branch_parser.add_argument(
         '-k', '--keep-children', action='store_true',
         help='reparent children of the current branch onto the new branch')
+    new_branch_parser.add_argument(
+        '-w', '--worktree', help='create the new branch in a worktree at this path')
     new_branch_parser.add_argument('name', help='the new branch name')
 
     delete_branch_parser = subparsers.add_parser(
         'delete-branch', help='delete a branch and reparent its children')
+    delete_branch_parser.add_argument(
+        '-f', '--force', action='store_true',
+        help='force remove the worktree if the branch is checked out')
     delete_branch_parser.add_argument(
         'name', nargs='?', help='the branch to delete')
 
@@ -600,9 +626,9 @@ def main():
     if args.cmd == 'ls':
         ls(args.include_all, args.no_gh)
     elif args.cmd == 'new-branch':
-        new_branch(args.before, args.keep_children, args.name)
+        new_branch(args.before, args.keep_children, args.name, args.worktree)
     elif args.cmd == 'delete-branch':
-        delete_branch(args.name)
+        delete_branch(args.name, args.force)
     elif args.cmd == 'rename-branch':
         rename_branch(args.branch, args.name)
     elif args.cmd == 'up':
