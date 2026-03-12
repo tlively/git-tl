@@ -30,15 +30,25 @@ def die(*msg):
     sys.exit(1)
 
 
-def run(*cmd, echo=False, returncode=False):
+
+def run(*cmd, echo=False, returncode=False, cwd=None):
+    if cwd and cmd[0] == 'git':
+        cmd = ('git', '-C', cwd) + cmd[1:]
+        cwd = None
+
+    cmd_string = shlex.join(cmd)
     if echo:
-        print('running:', shlex.join(cmd))
-    result = subprocess.run(cmd, capture_output=not echo, text=True)
+        if cwd:
+            print(f'running (in {cwd}):', cmd_string)
+        else:
+            print('running:', cmd_string)
+    result = subprocess.run(cmd, capture_output=not echo, cwd=cwd)
     if returncode:
         return result.returncode
     if result.returncode != 0:
-        print(result.stderr, file=sys.stderr)
-        die('failed running command:', shlex.join(cmd))
+        if result.stderr:
+            print(result.stderr.decode(errors='replace'), file=sys.stderr)
+        die('failed running command:', cmd_string)
     return result.stdout
 
 
@@ -88,6 +98,27 @@ class Branch():
         self.is_passed = False
         self.is_failed = False
         self.is_mergeable = False
+        self.worktree = None
+
+
+def get_worktrees():
+    # Get the worktrees and the branches they have checked out.
+    lines = run('git', 'worktree', 'list', '--porcelain').decode(errors='replace').splitlines()
+    worktrees = {}
+    current_worktree = None
+    for line in lines:
+        if line.startswith('worktree '):
+            current_worktree = line[9:]
+        elif line.startswith('branch '):
+            branch = line[7:]
+            if branch.startswith('refs/heads/'):
+                branch = branch[11:]
+            worktrees[branch] = current_worktree
+    return worktrees
+
+
+def get_current_worktree():
+    return run('git', 'rev-parse', '--show-toplevel').decode(errors='replace').strip()
 
     def __str__(self):
         return f'<GitBranch: {self.name} (parent={self.parent})>'
@@ -109,6 +140,11 @@ def get_branches(no_gh=False):
             branch.parent = branches.setdefault(upstream, Branch(upstream))
         if head == '*':
             branch.is_head = True
+
+    worktrees = get_worktrees()
+    for name, branch in branches.items():
+        if name in worktrees:
+            branch.worktree = worktrees[name]
 
     # Compute the children.
     for branch in branches.values():
@@ -346,7 +382,7 @@ def rename_branch(branch, name):
     run('git', 'branch', '-m', branch.name, name, echo=True)
 
     for child in branch.children:
-        run('git', 'branch', '--set-upstream-to', branch.name, child.name,
+        run('git', 'branch', '--set-upstream-to', name, child.name,
             echo=True)
 
 
@@ -361,6 +397,10 @@ def up(count):
                 '\n  '.join(child.name for child in curr.children))
         curr = curr.children[0]
 
+    current_worktree = get_current_worktree()
+    if curr.worktree and curr.worktree != current_worktree:
+        die(f'branch {curr.name} is already checked out in {curr.worktree}')
+
     run('git', 'switch', curr.name, echo=True)
 
 
@@ -371,6 +411,10 @@ def down(count):
         if not curr.parent:
             die('expected parent branch')
         curr = curr.parent
+
+    current_worktree = get_current_worktree()
+    if curr.worktree and curr.worktree != current_worktree:
+        die(f'branch {curr.name} is already checked out in {curr.worktree}')
 
     run('git', 'switch', curr.name, echo=True)
 
@@ -416,24 +460,31 @@ def sync(include_all, no_fetch):
                 roots.remove(branch.parent)
 
     # Rebase or merge branches
+    current_worktree = get_current_worktree()
     for branch in preorder(roots):
         if branch.name.startswith('origin/'):
             if not no_fetch:
                 parts = branch.name.split('/', 1)
                 run('git', 'fetch', parts[0], parts[1], echo=True)
         elif branch.parent:
+            cwd = branch.worktree if branch.worktree else current_worktree
             if branch.url:
                 # This branch is public, so merge instead of rebase.
-                run('git', 'switch', branch.name, echo=True)
-                run('git', 'merge', '--no-edit', branch.parent.name, echo=True)
+                if cwd == current_worktree:
+                    run('git', 'switch', branch.name, echo=True)
+                run('git', 'merge', '--no-edit', branch.parent.name, echo=True, cwd=cwd)
             elif branch in parentRefs:
                 run('git', 'rebase', '--onto', branch.parent.name,
-                    parentRefs[branch], branch.name, echo=True)
+                    parentRefs[branch], branch.name, echo=True, cwd=cwd)
             else:
-                run('git', 'rebase', branch.parent.name, branch.name, echo=True)
+                run('git', 'rebase', branch.parent.name, branch.name, echo=True, cwd=cwd)
 
     new_head = head.name if not deleted_head else default_upstream
-    run('git', 'switch', new_head, echo=True)
+    new_head_branch = [b for b in branches if b.name == new_head][0]
+    if new_head_branch.worktree and new_head_branch.worktree != current_worktree:
+        print(f"HEAD branch {new_head} is checked out in {new_head_branch.worktree}")
+    else:
+        run('git', 'switch', new_head, echo=True)
 
 
 def push(update_only, reviewers):
