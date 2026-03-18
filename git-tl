@@ -42,12 +42,12 @@ def run(*cmd, echo=False, returncode=False, cwd=None):
             print(f'running (in {cwd}):', cmd_string)
         else:
             print('running:', cmd_string)
-    result = subprocess.run(cmd, capture_output=not echo, cwd=cwd)
+    result = subprocess.run(cmd, capture_output=not echo, cwd=cwd, text=True)
     if returncode:
         return result.returncode
     if result.returncode != 0:
         if result.stderr:
-            print(result.stderr.decode(errors='replace'), file=sys.stderr)
+            print(result.stderr, file=sys.stderr)
         die('failed running command:', cmd_string)
     return result.stdout
 
@@ -103,7 +103,7 @@ class Branch():
 
 def get_worktrees():
     # Get the worktrees and the branches they have checked out.
-    lines = run('git', 'worktree', 'list', '--porcelain').decode(errors='replace').splitlines()
+    lines = run('git', 'worktree', 'list', '--porcelain').splitlines()
     worktrees = {}
     main_worktree = None
     current_worktree = None
@@ -121,7 +121,7 @@ def get_worktrees():
 
 
 def get_current_worktree():
-    return run('git', 'rev-parse', '--show-toplevel').decode(errors='replace').strip()
+    return run('git', 'rev-parse', '--show-toplevel').strip()
 
     def __str__(self):
         return f'<GitBranch: {self.name} (parent={self.parent})>'
@@ -609,7 +609,7 @@ def main():
         '-a', '--all', action='store_true', dest='include_all',
         help=f"include all branches, not just those stacked on '{default_upstream}'")
     sync_parser.add_argument(
-        '-n', '--no-fetch', action='store_true',
+        '-n', '--no-fetch', action='store_false', default=True,
         help='do not fetch origin/main before rebasing')
 
     push_parser = subparsers.add_parser(
